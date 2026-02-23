@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn src/server.ts",
-    "db:migrate": "ts-node scripts/init-db.ts"
+    "db:migrate": "ts-node scripts/init-db.ts",
+    "db:migrate:run": "ts-node scripts/migrate-001.ts",
+    "db:setup": "npm run db:migrate && npm run db:migrate:run"
   },
   "keywords": [],
   "author": "",

@@ -1,11 +1,14 @@
 // routes/students.ts
 import { Router, Request, Response } from "express";
 import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 import pool from "../db/db";
+import { config } from "../config/config";
 
 const router = Router();
 
 // -------------------- POST: Self-register student --------------------
+// First user to register becomes ADMIN; all subsequent users become STUDENT.
 router.post("/register/student", async (req: Request, res: Response) => {
     try {
         const {
@@ -22,30 +25,50 @@ router.post("/register/student", async (req: Request, res: Response) => {
             return res.status(400).json({ error: "All student fields are required" });
         }
 
+        // Determine role: first user ever → ADMIN, everyone else → STUDENT
+        const countResult = await pool.query("SELECT COUNT(*) FROM users");
+        const userCount = parseInt(countResult.rows[0].count, 10);
+        const roleName = userCount === 0 ? "ADMIN" : "STUDENT";
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Create user with STUDENT role only
+        // Create user with the determined role
         const userResult = await pool.query(
             `INSERT INTO users (email, password_hash, role_id)
-             SELECT $1, $2, id FROM roles WHERE name = 'STUDENT'
-             RETURNING id, email`,
-            [email, hashedPassword]
+             SELECT $1, $2, id FROM roles WHERE name = $3
+             RETURNING id, email, role_id`,
+            [email, hashedPassword, roleName]
         );
 
         const user = userResult.rows[0];
 
-        const studentResult = await pool.query(
-            `INSERT INTO students
-             (user_id, full_name, national_id, institution, course, year_of_study)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             RETURNING id, user_id, full_name, national_id, institution, course, year_of_study, created_at`,
-            [user.id, full_name, national_id, institution, course, year_of_study]
+        // Only create a student profile for STUDENT role users
+        let student = null;
+        if (roleName === "STUDENT") {
+            const studentResult = await pool.query(
+                `INSERT INTO students
+                 (user_id, full_name, national_id, institution, course, year_of_study)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 RETURNING id, user_id, full_name, national_id, institution, course, year_of_study, created_at`,
+                [user.id, full_name, national_id, institution, course, year_of_study]
+            );
+            student = studentResult.rows[0];
+        }
+
+        // Generate JWT so the user is immediately logged in
+        const token = jwt.sign(
+            { userId: user.id, role: roleName, email: user.email },
+            config().jwtSecret,
+            { expiresIn: "24h" }
         );
 
         res.status(201).json({
-            message: "Student registered successfully",
-            user,
-            student: studentResult.rows[0],
+            message: roleName === "ADMIN"
+                ? "Admin account created successfully (first user)"
+                : "Student registered successfully",
+            token,
+            user: { id: user.id, email: user.email, role: roleName },
+            student,
         });
 
     } catch (err: any) {

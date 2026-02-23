@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -52,6 +53,68 @@ export const login = async (req: Request, res: Response) => {
         });
     } catch (error) {
         console.error("Login error:", error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+export const signup = async (req: Request, res: Response) => {
+    try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ message: "Email and password are required" });
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({ message: "Password must be at least 8 characters" });
+        }
+
+        // Check if email is already taken
+        const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
+        if (existing.rowCount! > 0) {
+            return res.status(400).json({ message: "Email already exists" });
+        }
+
+        // Determine role: first user becomes ADMIN, everyone else STUDENT
+        const countResult = await pool.query("SELECT COUNT(*) FROM users");
+        const userCount = parseInt(countResult.rows[0].count, 10);
+        const roleName = userCount === 0 ? "ADMIN" : "STUDENT";
+
+        const roleResult = await pool.query("SELECT id FROM roles WHERE name = $1", [roleName]);
+        if (roleResult.rowCount === 0) {
+            return res.status(500).json({ message: `Role ${roleName} not found in database` });
+        }
+        const roleId = roleResult.rows[0].id;
+
+        // Hash password and insert user
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const userResult = await pool.query(
+            `INSERT INTO users (email, password_hash, role_id, is_active)
+             VALUES ($1, $2, $3, true)
+             RETURNING id, email, role_id`,
+            [email, hashedPassword, roleId]
+        );
+
+        const user = userResult.rows[0];
+
+        // Issue JWT so the user is immediately logged in
+        const token = jwt.sign(
+            { userId: user.id, role: roleName, email: user.email },
+            config().jwtSecret,
+            { expiresIn: "24h" }
+        );
+
+        return res.status(201).json({
+            message: `Account created successfully as ${roleName}`,
+            token,
+            user: {
+                id: user.id,
+                email: user.email,
+                role: roleName,
+            },
+        });
+    } catch (error) {
+        console.error("Signup error:", error);
         res.status(500).json({ message: "Internal server error" });
     }
 };
